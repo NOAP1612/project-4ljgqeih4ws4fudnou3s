@@ -1,13 +1,9 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import { FileUpload } from '@/components/FileUpload';
-import { AudioAnalyzer } from '@/components/AudioAnalyzer';
-import { VideoPreview } from '@/components/VideoPreview';
 import { ClipSelector } from '@/components/ClipSelector';
 import { ProcessingStatus } from '@/components/ProcessingStatus';
 import { AspectRatioSelector } from '@/components/AspectRatioSelector';
@@ -15,6 +11,10 @@ import { useAudioProcessing } from '@/hooks/useAudioProcessing';
 import { useVideoProcessing } from '@/hooks/useVideoProcessing';
 import { Mic, Video, Sparkles, Download, Settings, Info, FileText } from 'lucide-react';
 import { toast } from 'sonner';
+import { VideoTimeline } from '@/components/VideoTimeline';
+import { TranscriptionViewer } from '@/components/TranscriptionViewer';
+import { uploadFile } from '@/integrations/core';
+import { transcribeAudio } from '@/functions';
 
 interface ProcessedFile {
   file: File;
@@ -24,9 +24,29 @@ interface ProcessedFile {
   hookSegment: { start: number; end: number };
 }
 
+interface TranscriptionSegment {
+  id: number;
+  seek: number;
+  start: number;
+  end: number;
+  text: string;
+  tokens: number[];
+  temperature: number;
+  avg_logprob: number;
+  compression_ratio: number;
+  no_speech_prob: number;
+}
+
+interface TranscriptionResult {
+  text: string;
+  segments: TranscriptionSegment[];
+  language: string;
+}
+
 const Index = () => {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [processedData, setProcessedData] = useState<ProcessedFile | null>(null);
+  const [transcription, setTranscription] = useState<TranscriptionResult | null>(null);
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [selectedClips, setSelectedClips] = useState<number[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -34,6 +54,8 @@ const Index = () => {
   const [numHighlights, setNumHighlights] = useState(3);
   const [clipDuration, setClipDuration] = useState(30);
   const [sensitivity, setSensitivity] = useState(0.7);
+  const [mainPlayerTime, setMainPlayerTime] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   const { processAudio } = useAudioProcessing();
   const { generateFinalVideo } = useVideoProcessing();
@@ -124,17 +146,32 @@ const Index = () => {
     setUploadedFile(file);
     setIsProcessing(true);
     setProcessingStep('מעלה קובץ...');
+    setProcessedData(null);
+    setTranscription(null);
 
     try {
-      // Process audio for analysis
-      setProcessingStep('מנתח אודיו...');
-      const audioData = await processAudio(file);
+      toast.info('מעלה קובץ...');
+      const { file_url } = await uploadFile({ file });
+      if (!file_url) {
+        throw new Error('File upload failed');
+      }
+
+      setProcessingStep('מנתח אודיו ומתמלל...');
+      
+      const [audioData, transcriptionResult] = await Promise.all([
+        processAudio(file),
+        transcribeAudio({ file_url })
+      ]);
       
       if (!audioData) {
         throw new Error('Failed to process audio');
       }
+      if (!transcriptionResult || (transcriptionResult as any).error) {
+        throw new Error((transcriptionResult as any).error?.message || 'Failed to get transcription');
+      }
 
-      // Find highlights and hook
+      setTranscription(transcriptionResult as TranscriptionResult);
+
       setProcessingStep('מחפש הוק וקטעי שיא...');
       const hookSegment = findBestHook(audioData.audioBuffer, 15, audioData.sampleRate);
       const highlights = await findHighlights(audioData.audioBuffer, numHighlights, sensitivity, hookSegment);
@@ -148,11 +185,12 @@ const Index = () => {
       };
 
       setProcessedData(processed);
-      setSelectedClips([0, ...highlights.slice(0, numHighlights).map((_, i) => i + 1)]);
+      setSelectedClips([0, ...Array.from({ length: highlights.length }, (_, i) => i + 1)]);
       toast.success(`נמצאו ${highlights.length} קטעי שיא + הוק!`);
     } catch (error) {
       console.error('Processing error:', error);
-      toast.error('שגיאה בעיבוד הקובץ');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      toast.error(`שגיאה בעיבוד הקובץ: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
       setProcessingStep('');
@@ -197,9 +235,29 @@ const Index = () => {
     }
   };
 
+  const handleSeek = (time: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
+      setMainPlayerTime(time);
+    }
+  };
+
+  const allClipsForTimeline = processedData ? [
+    {
+      startTime: processedData.hookSegment.start,
+      endTime: processedData.hookSegment.end,
+      type: 'hook' as const,
+    },
+    ...processedData.highlights.map(h => ({
+      startTime: Math.max(0, h - clipDuration / 2),
+      endTime: Math.min(processedData.duration, h + clipDuration / 2),
+      type: 'highlight' as const,
+    }))
+  ] : [];
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-50">
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 py-8 max-w-screen-2xl">
         {/* Header */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-4">
@@ -221,25 +279,24 @@ const Index = () => {
               זיהוי שיאים
             </Badge>
             <Badge variant="secondary" className="gap-1">
-              <Settings className="h-3 w-3" />
-              יחסי גובה-רוחב
+              <FileText className="h-3 w-3" />
+              תמלול חי
             </Badge>
           </div>
           
-          {/* Quick Access to Transcription */}
           <div className="mb-6">
             <Button asChild variant="outline" size="lg" className="gap-2">
               <Link to="/transcription">
                 <FileText className="h-4 w-4" />
-                תמלול אודיו/וידאו לטקסט
+                מעבר לדף תמלול בלבד
               </Link>
             </Button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Settings Panel */}
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-3">
             <Card className="sticky top-6">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -317,17 +374,98 @@ const Index = () => {
           </div>
 
           {/* Main Content */}
-          <div className="lg:col-span-3">
-            <Tabs defaultValue="upload" className="space-y-6">
-              <TabsList className="grid w-full grid-cols-4">
-                <TabsTrigger value="upload">העלאה</TabsTrigger>
-                <TabsTrigger value="analysis" disabled={!processedData}>ניתוח</TabsTrigger>
-                <TabsTrigger value="preview" disabled={!processedData}>תצוגה מקדימה</TabsTrigger>
-                <TabsTrigger value="export" disabled={!processedData}>יצוא</TabsTrigger>
-              </TabsList>
+          <div className="lg:col-span-9">
+            {!processedData ? (
+              <Card className="min-h-[600px] flex flex-col justify-center">
+                <CardHeader>
+                  <CardTitle className="text-center">העלה קובץ וידאו או אודיו כדי להתחיל</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <FileUpload
+                    onFileSelect={handleFileUpload}
+                    acceptedTypes={['video/mp4', 'video/mov', 'audio/mp3', 'audio/wav', 'audio/mpeg']}
+                    maxSize={200 * 1024 * 1024} // 200MB
+                  />
+                  {isProcessing && (
+                    <div className="mt-6">
+                      <ProcessingStatus
+                        isProcessing={isProcessing}
+                        currentStep={processingStep}
+                      />
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                  <div className="xl:col-span-2 space-y-6">
+                    {/* Main Video Player & Timeline */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>תצוגה מקדימה ראשית</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <video
+                          ref={videoRef}
+                          src={URL.createObjectURL(processedData.file)}
+                          controls
+                          className="w-full rounded-lg aspect-video bg-black"
+                          onTimeUpdate={(e) => setMainPlayerTime(e.currentTarget.currentTime)}
+                        />
+                        <VideoTimeline
+                          duration={processedData.duration}
+                          clips={allClipsForTimeline}
+                          currentTime={mainPlayerTime}
+                          onSeek={handleSeek}
+                        />
+                      </CardContent>
+                    </Card>
+                  </div>
+                  
+                  {/* Transcription */}
+                  {transcription && (
+                    <TranscriptionViewer
+                      segments={transcription.segments}
+                      currentTime={mainPlayerTime}
+                      onSegmentClick={handleSeek}
+                      className="xl:col-span-1"
+                    />
+                  )}
+                </div>
 
-              {/* ... keep existing code (TabsContent sections) */}
-            </Tabs>
+                {/* Clip Selector */}
+                <ClipSelector
+                  file={processedData.file}
+                  highlights={processedData.highlights}
+                  hookSegment={processedData.hookSegment}
+                  selectedClips={selectedClips}
+                  onSelectionChange={setSelectedClips}
+                  aspectRatio={aspectRatio}
+                  clipDuration={clipDuration}
+                />
+
+                {/* Export */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Download className="h-5 w-5" />
+                      יצירת סרטון סופי
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Button
+                      onClick={handleGenerateFinalVideo}
+                      disabled={isProcessing || selectedClips.length === 0}
+                      className="w-full"
+                      size="lg"
+                    >
+                      {isProcessing ? 'מעבד...' : `צור והורד (${selectedClips.length}) קטעים`}
+                    </Button>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -40,11 +40,11 @@ const TranscriptionPage = () => {
       toast.info('הקובץ הועלה, שולח לתמלול...');
       const result = await transcribeAudio({ file_url });
       
-      if (result.transcription) {
-        setTranscription(result.transcription);
+      if (result.text) {
+        setTranscription(result.text);
         toast.success('התמלול הושלם בהצלחה!');
       } else {
-        throw new Error(result.error || 'שגיאה לא ידועה בתמלול');
+        throw new Error((result as any).error || 'שגיאה לא ידועה בתמלול');
       }
     } catch (error) {
       console.error('Transcription error:', error);
@@ -90,7 +90,7 @@ const TranscriptionPage = () => {
             <CardContent>
               <FileUpload
                 onFileSelect={handleFileSelect}
-                acceptedTypes={['audio/mp3', 'audio/wav', 'audio/mp4', 'audio/mpeg', 'video/mp4', 'video/quicktime', 'video/webm']}
+                acceptedTypes={["audio/mp3", "audio/wav", "audio/mp4", "audio/mpeg", "video/mp4", "video/quicktime", "video/webm"]}
                 maxSize={25 * 1024 * 1024} // 25MB limit for Whisper API
               />
               {file && (

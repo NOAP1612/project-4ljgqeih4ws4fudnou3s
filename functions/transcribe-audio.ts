@@ -41,7 +41,7 @@ Deno.serve(async (req) => {
     transcriptionFormData.append('file', fileBlob, originalFilename);
     transcriptionFormData.append('model', 'whisper-1');
     transcriptionFormData.append('language', 'he');
-    transcriptionFormData.append('response_format', 'json');
+    transcriptionFormData.append('response_format', 'verbose_json');
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
 
     const data = await response.json();
 
-    return new Response(JSON.stringify({ transcription: data.text }), {
+    return new Response(JSON.stringify(data), {
       status: 200,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
     });
