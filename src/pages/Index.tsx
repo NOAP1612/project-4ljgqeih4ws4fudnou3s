@@ -156,21 +156,30 @@ const Index = () => {
         throw new Error('File upload failed');
       }
 
-      setProcessingStep('מנתח אודיו ומתמלל...');
+      setProcessingStep('מנתח אודיו...');
       
-      const [audioData, transcriptionResult] = await Promise.all([
-        processAudio(file),
-        transcribeAudio({ file_url })
-      ]);
-      
+      // Process audio first
+      const audioData = await processAudio(file);
       if (!audioData) {
         throw new Error('Failed to process audio');
       }
-      if (!transcriptionResult || (transcriptionResult as any).error) {
-        throw new Error((transcriptionResult as any).error?.message || 'Failed to get transcription');
-      }
 
-      setTranscription(transcriptionResult as TranscriptionResult);
+      // Try transcription but don't fail if it doesn't work
+      let transcriptionResult = null;
+      try {
+        setProcessingStep('מתמלל אודיו...');
+        transcriptionResult = await transcribeAudio({ file_url });
+        if (transcriptionResult && !transcriptionResult.error) {
+          setTranscription(transcriptionResult as TranscriptionResult);
+          toast.success('תמלול הושלם בהצלחה!');
+        } else {
+          console.warn('Transcription failed:', transcriptionResult);
+          toast.warning('התמלול נכשל, אך העיבוד ימשיך ללא תמלול');
+        }
+      } catch (transcriptionError) {
+        console.warn('Transcription error:', transcriptionError);
+        toast.warning('התמלול נכשל, אך העיבוד ימשיך ללא תמלול');
+      }
 
       setProcessingStep('מחפש הוק וקטעי שיא...');
       const hookSegment = findBestHook(audioData.audioBuffer, 15, audioData.sampleRate);
@@ -383,7 +392,7 @@ const Index = () => {
                 <CardContent>
                   <FileUpload
                     onFileSelect={handleFileUpload}
-                    acceptedTypes={['video/mp4', 'video/mov', 'audio/mp3', 'audio/wav', 'audio/mpeg']}
+                    acceptedTypes={["video/mp4", "video/mov", "audio/mp3", "audio/wav", "audio/mpeg"]}
                     maxSize={200 * 1024 * 1024} // 200MB
                   />
                   {isProcessing && (
