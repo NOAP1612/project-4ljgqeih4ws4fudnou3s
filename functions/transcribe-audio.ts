@@ -1,3 +1,5 @@
+import OpenAI from "npm:openai";
+
 Deno.serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -35,7 +37,7 @@ Deno.serve(async (req) => {
         throw new Error(`Failed to fetch file from URL: ${fileResponse.statusText}`);
     }
     const fileBlob = await fileResponse.blob();
-    const originalFilename = file_url.split('/').pop() || 'file';
+    const originalFilename = file_url.split('/').pop() || 'file.mp4';
     
     console.log('File fetched successfully, size:', fileBlob.size, 'filename:', originalFilename);
 
@@ -48,39 +50,20 @@ Deno.serve(async (req) => {
         });
     }
 
-    console.log('Preparing transcription request to OpenAI');
+    console.log('Initializing OpenAI client and sending transcription request...');
     
-    const transcriptionFormData = new FormData();
-    transcriptionFormData.append('file', fileBlob, originalFilename);
-    transcriptionFormData.append('model', 'whisper-1');
-    transcriptionFormData.append('language', 'he');
-    transcriptionFormData.append('response_format', 'verbose_json');
+    const openai = new OpenAI({ apiKey: openaiApiKey });
 
-    console.log('Sending request to OpenAI Whisper API');
-    
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${openaiApiKey}`,
-      },
-      body: transcriptionFormData,
+    const transcription = await openai.audio.transcriptions.create({
+        file: new File([fileBlob], originalFilename, { type: fileBlob.type }),
+        model: 'whisper-1',
+        language: 'he',
+        response_format: 'verbose_json',
     });
 
-    console.log('OpenAI response status:', response.status);
+    console.log('Transcription successful, text length:', transcription.text?.length || 0);
 
-    if (!response.ok) {
-        const errorData = await response.json();
-        console.error('OpenAI API error:', errorData);
-        return new Response(JSON.stringify({ error: 'Failed to transcribe audio', details: errorData }), {
-            status: response.status,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-    }
-
-    const data = await response.json();
-    console.log('Transcription successful, text length:', data.text?.length || 0);
-
-    return new Response(JSON.stringify(data), {
+    return new Response(JSON.stringify(transcription), {
       status: 200,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
     });
