@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -12,7 +13,7 @@ import { ProcessingStatus } from '@/components/ProcessingStatus';
 import { AspectRatioSelector } from '@/components/AspectRatioSelector';
 import { useAudioProcessing } from '@/hooks/useAudioProcessing';
 import { useVideoProcessing } from '@/hooks/useVideoProcessing';
-import { Mic, Video, Sparkles, Download, Settings, Info } from 'lucide-react';
+import { Mic, Video, Sparkles, Download, Settings, Info, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface ProcessedFile {
@@ -210,7 +211,7 @@ const Index = () => {
             </h1>
           </div>
           <p className="text-xl text-gray-600 mb-2">יוצר סרטונים מרתקים עם פתיחה חזקה ורגעי שיא</p>
-          <div className="flex items-center justify-center gap-2 flex-wrap">
+          <div className="flex items-center justify-center gap-2 flex-wrap mb-4">
             <Badge variant="secondary" className="gap-1">
               <Sparkles className="h-3 w-3" />
               הוק אוטומטי
@@ -223,6 +224,16 @@ const Index = () => {
               <Settings className="h-3 w-3" />
               יחסי גובה-רוחב
             </Badge>
+          </div>
+          
+          {/* Quick Access to Transcription */}
+          <div className="mb-6">
+            <Button asChild variant="outline" size="lg" className="gap-2">
+              <Link to="/transcription">
+                <FileText className="h-4 w-4" />
+                תמלול אודיו/וידאו לטקסט
+              </Link>
+            </Button>
           </div>
         </div>
 
@@ -315,111 +326,7 @@ const Index = () => {
                 <TabsTrigger value="export" disabled={!processedData}>יצוא</TabsTrigger>
               </TabsList>
 
-              <TabsContent value="upload" className="space-y-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>העלה קובץ וידאו או אודיו</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <FileUpload
-                      onFileSelect={handleFileUpload}
-                      acceptedTypes={['video/mp4', 'video/avi', 'video/mov', 'audio/mp3', 'audio/wav']}
-                      maxSize={200 * 1024 * 1024} // 200MB
-                    />
-                    {uploadedFile && (
-                      <div className="mt-4 p-4 bg-green-50 rounded-lg">
-                        <p className="text-sm font-medium text-green-800">
-                          קובץ נבחר: {uploadedFile.name}
-                        </p>
-                        <p className="text-xs text-green-600">
-                          גודל: {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {isProcessing && (
-                  <ProcessingStatus
-                    isProcessing={isProcessing}
-                    currentStep={processingStep}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="analysis" className="space-y-6">
-                {processedData && (
-                  <AudioAnalyzer
-                    audioData={processedData.audioData}
-                    duration={processedData.duration}
-                    highlights={processedData.highlights}
-                    hookSegment={processedData.hookSegment}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="preview" className="space-y-6">
-                {processedData && (
-                  <ClipSelector
-                    file={processedData.file}
-                    highlights={processedData.highlights}
-                    hookSegment={processedData.hookSegment}
-                    selectedClips={selectedClips}
-                    onSelectionChange={setSelectedClips}
-                    aspectRatio={aspectRatio}
-                    clipDuration={clipDuration}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="export" className="space-y-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Download className="h-5 w-5" />
-                      יצירת סרטון סופי
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      <div className="p-4 bg-gray-50 rounded-lg">
-                        <h4 className="font-medium mb-2">סיכום הבחירה:</h4>
-                        <div className="text-sm text-gray-600 space-y-1">
-                          <p>• יחס גובה-רוחב: {aspectRatio}</p>
-                          <p>• קטעים נבחרים: {selectedClips.length}</p>
-                          <p>• אורך משוער: {selectedClips.length * clipDuration} שניות</p>
-                        </div>
-                      </div>
-
-                      <Button
-                        onClick={handleGenerateFinalVideo}
-                        disabled={isProcessing || selectedClips.length === 0}
-                        className="w-full"
-                        size="lg"
-                      >
-                        {isProcessing ? (
-                          <>
-                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
-                            {processingStep}
-                          </>
-                        ) : (
-                          <>
-                            <Download className="h-4 w-4 mr-2" />
-                            צור והורד סרטון
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {isProcessing && (
-                  <ProcessingStatus
-                    isProcessing={isProcessing}
-                    currentStep={processingStep}
-                  />
-                )}
-              </TabsContent>
+              {/* ... keep existing code (TabsContent sections) */}
             </Tabs>
           </div>
         </div>
