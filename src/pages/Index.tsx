@@ -1,41 +1,21 @@
 import React, { useState, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import { FileUpload } from '@/components/FileUpload';
-import { AudioAnalyzer } from '@/components/AudioAnalyzer';
-import { VideoPreview } from '@/components/VideoPreview';
-import { ClipSelector } from '@/components/ClipSelector';
-import { ProcessingStatus } from '@/components/ProcessingStatus';
-import { AspectRatioSelector } from '@/components/AspectRatioSelector';
-import { useAudioProcessing } from '@/hooks/useAudioProcessing';
+// ... keep existing code
 import { useVideoProcessing } from '@/hooks/useVideoProcessing';
 import { Mic, Video, Sparkles, Download, Settings, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface ProcessedFile {
-  file: File;
-  audioData: Float32Array;
-  duration: number;
-  highlights: number[];
-  hookSegment: { start: number; end: number };
+// ... keep existing code
 }
 
 const Index = () => {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [processedData, setProcessedData] = useState<ProcessedFile | null>(null);
-  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
-  const [selectedClips, setSelectedClips] = useState<number[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [processingStep, setProcessingStep] = useState('');
-  const [numHighlights, setNumHighlights] = useState(3);
-  const [clipDuration, setClipDuration] = useState(30);
+// ... keep existing code
   const [sensitivity, setSensitivity] = useState(0.7);
 
   const { processAudio } = useAudioProcessing();
-  const { processVideo, generateFinalVideo } = useVideoProcessing();
+  const { generateFinalVideo } = useVideoProcessing();
 
   const handleFileUpload = useCallback(async (file: File) => {
     setUploadedFile(file);
@@ -53,8 +33,8 @@ const Index = () => {
 
       // Find highlights and hook
       setProcessingStep('מחפש הוק וקטעי שיא...');
-      const highlights = await findHighlights(audioData.audioBuffer, numHighlights, sensitivity);
-      const hookSegment = { start: 0, end: Math.min(15, audioData.duration) };
+      const hookSegment = findBestHook(audioData.audioBuffer, 15, audioData.sampleRate);
+      const highlights = await findHighlights(audioData.audioBuffer, numHighlights, sensitivity, hookSegment);
 
       const processed: ProcessedFile = {
         file,
@@ -76,7 +56,34 @@ const Index = () => {
     }
   }, [processAudio, numHighlights, sensitivity]);
 
-  const findHighlights = async (audioBuffer: Float32Array, numSegments: number, threshold: number): Promise<number[]> => {
+  const findBestHook = (audioBuffer: Float32Array, hookDuration: number, sampleRate: number): { start: number; end: number } => {
+    const windowSamples = Math.floor(hookDuration * sampleRate);
+    let maxEnergy = 0;
+    let bestStartTime = 0;
+
+    const stepSamples = sampleRate; // Step by 1 second
+
+    for (let i = 0; i <= audioBuffer.length - windowSamples; i += stepSamples) {
+        const segment = audioBuffer.slice(i, i + windowSamples);
+        const energy = segment.reduce((sum, sample) => sum + Math.abs(sample), 0) / segment.length;
+
+        if (energy > maxEnergy) {
+            maxEnergy = energy;
+            bestStartTime = i / sampleRate;
+        }
+    }
+    
+    const bestEndTime = Math.min(bestStartTime + hookDuration, audioBuffer.length / sampleRate);
+
+    return { start: bestStartTime, end: bestEndTime };
+  };
+
+  const findHighlights = async (
+    audioBuffer: Float32Array, 
+    numSegments: number, 
+    threshold: number,
+    excludeRange?: { start: number; end: number }
+  ): Promise<number[]> => {
     // Simple energy-based highlight detection
     const windowSize = 44100; // 1 second at 44.1kHz
     const energyValues: number[] = [];
@@ -91,11 +98,15 @@ const Index = () => {
     const maxEnergy = Math.max(...energyValues);
     const normalizedEnergy = energyValues.map(e => e / maxEnergy);
 
-    // Find peaks (skip first 15 seconds for hook)
-    const skipSeconds = 15;
+    // Find peaks
     const peaks: number[] = [];
     
-    for (let i = skipSeconds; i < normalizedEnergy.length; i++) {
+    for (let i = 0; i < normalizedEnergy.length; i++) {
+      // Check if inside excluded range
+      if (excludeRange && i >= excludeRange.start && i <= excludeRange.end) {
+        continue;
+      }
+
       if (normalizedEnergy[i] > threshold) {
         // Ensure minimum distance between peaks
         if (peaks.length === 0 || i - peaks[peaks.length - 1] > 30) {
@@ -106,9 +117,14 @@ const Index = () => {
 
     // If not enough peaks, find top energy points
     if (peaks.length < numSegments) {
-      const energySubset = normalizedEnergy.slice(skipSeconds);
+      const energySubset = normalizedEnergy
+        .map((energy, index) => ({ energy, index }))
+        .filter(({ index }) => {
+            if (!excludeRange) return true;
+            return index < excludeRange.start || index > excludeRange.end;
+        });
+
       const topIndices = energySubset
-        .map((energy, index) => ({ energy, index: index + skipSeconds }))
         .sort((a, b) => b.energy - a.energy)
         .slice(0, numSegments)
         .map(item => item.index)
@@ -121,142 +137,16 @@ const Index = () => {
   };
 
   const handleGenerateFinalVideo = async () => {
-    if (!processedData || selectedClips.length === 0) return;
-
-    setIsProcessing(true);
-    setProcessingStep('יוצר סרטון סופי...');
-
-    try {
-      const finalVideo = await generateFinalVideo(
-        processedData.file,
-        selectedClips,
-        processedData.highlights,
-        processedData.hookSegment,
-        aspectRatio,
-        clipDuration
-      );
-
-      if (finalVideo) {
-        // Create download link
-        const url = URL.createObjectURL(finalVideo);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `podcast-highlights-${aspectRatio.replace(':', 'x')}-${Date.now()}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        
-        toast.success('הסרטון נוצר בהצלחה!');
-      }
-    } catch (error) {
-      console.error('Video generation error:', error);
-      toast.error('שגיאה ביצירת הסרטון');
-    } finally {
-      setIsProcessing(false);
-      setProcessingStep('');
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-slate-50">
-      <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <div className="p-3 bg-gradient-to-br from-purple-500 to-blue-600 rounded-2xl shadow-lg">
-              <Mic className="h-8 w-8 text-white" />
-            </div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-              עורך פודקאסטים חכם
-            </h1>
-          </div>
-          <p className="text-xl text-gray-600 mb-2">יוצר סרטונים מרתקים עם פתיחה חזקה ורגעי שיא</p>
-          <div className="flex items-center justify-center gap-2 flex-wrap">
-            <Badge variant="secondary" className="gap-1">
-              <Sparkles className="h-3 w-3" />
-              הוק אוטומטי
-            </Badge>
-            <Badge variant="secondary" className="gap-1">
-              <Video className="h-3 w-3" />
-              זיהוי שיאים
-            </Badge>
-            <Badge variant="secondary" className="gap-1">
-              <Settings className="h-3 w-3" />
-              יחסי גובה-רוחב
-            </Badge>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Settings Panel */}
-          <div className="lg:col-span-1">
-            <Card className="sticky top-6">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Settings className="h-5 w-5" />
-                  הגדרות
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <AspectRatioSelector
-                  value={aspectRatio}
-                  onChange={setAspectRatio}
-                />
-                
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    מספר קטעי שיא
-                  </label>
-                  <input
-                    type="range"
-                    min="2"
-                    max="5"
-                    value={numHighlights}
-                    onChange={(e) => setNumHighlights(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="text-sm text-gray-500 mt-1">{numHighlights} קטעים</div>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    אורך כל קטע (שניות)
-                  </label>
-                  <input
-                    type="range"
-                    min="15"
-                    max="60"
-                    value={clipDuration}
-                    onChange={(e) => setClipDuration(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="text-sm text-gray-500 mt-1">{clipDuration} שניות</div>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium mb-2 block">
-                    רגישות זיהוי
-                  </label>
-                  <input
-                    type="range"
-                    min="0.5"
-                    max="0.9"
-                    step="0.1"
-                    value={sensitivity}
-                    onChange={(e) => setSensitivity(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <div className="text-sm text-gray-500 mt-1">{sensitivity}</div>
-                </div>
-
+// ... keep existing code
+// ... keep existing code
+// ... keep existing code
                 <div className="p-3 bg-blue-50 rounded-lg">
                   <div className="flex items-start gap-2">
                     <Info className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
                     <div className="text-sm text-blue-800">
                       <p className="font-medium mb-1">💡 טיפים:</p>
                       <ul className="text-xs space-y-1">
-                        <li>• ההוק תמיד 15 השניות הראשונות</li>
+                        <li>• ההוק הוא 15 השניות הכי חזקות</li>
                         <li>• 16:9 ליוטיוב, 9:16 לסטורי</li>
                         <li>• רגישות גבוהה = יותר קטעים</li>
                       </ul>
@@ -269,125 +159,9 @@ const Index = () => {
 
           {/* Main Content */}
           <div className="lg:col-span-3">
-            <Tabs defaultValue="upload" className="space-y-6">
-              <TabsList className="grid w-full grid-cols-4">
-                <TabsTrigger value="upload">העלאה</TabsTrigger>
-                <TabsTrigger value="analysis" disabled={!processedData}>ניתוח</TabsTrigger>
-                <TabsTrigger value="preview" disabled={!processedData}>תצוגה מקדימה</TabsTrigger>
-                <TabsTrigger value="export" disabled={!processedData}>יצוא</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="upload" className="space-y-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>העלה קובץ וידאו או אודיו</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <FileUpload
-                      onFileSelect={handleFileUpload}
-                      acceptedTypes={['video/mp4', 'video/avi', 'video/mov', 'audio/mp3', 'audio/wav']}
-                      maxSize={200 * 1024 * 1024} // 200MB
-                    />
-                    {uploadedFile && (
-                      <div className="mt-4 p-4 bg-green-50 rounded-lg">
-                        <p className="text-sm font-medium text-green-800">
-                          קובץ נבחר: {uploadedFile.name}
-                        </p>
-                        <p className="text-xs text-green-600">
-                          גודל: {(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                {isProcessing && (
-                  <ProcessingStatus
-                    isProcessing={isProcessing}
-                    currentStep={processingStep}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="analysis" className="space-y-6">
-                {processedData && (
-                  <AudioAnalyzer
-                    audioData={processedData.audioData}
-                    duration={processedData.duration}
-                    highlights={processedData.highlights}
-                    hookSegment={processedData.hookSegment}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="preview" className="space-y-6">
-                {processedData && (
-                  <ClipSelector
-                    file={processedData.file}
-                    highlights={processedData.highlights}
-                    hookSegment={processedData.hookSegment}
-                    selectedClips={selectedClips}
-                    onSelectionChange={setSelectedClips}
-                    aspectRatio={aspectRatio}
-                    clipDuration={clipDuration}
-                  />
-                )}
-              </TabsContent>
-
-              <TabsContent value="export" className="space-y-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Download className="h-5 w-5" />
-                      יצירת סרטון סופי
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      <div className="p-4 bg-gray-50 rounded-lg">
-                        <h4 className="font-medium mb-2">סיכום הבחירה:</h4>
-                        <div className="text-sm text-gray-600 space-y-1">
-                          <p>• יחס גובה-רוחב: {aspectRatio}</p>
-                          <p>• קטעים נבחרים: {selectedClips.length}</p>
-                          <p>• אורך משוער: {selectedClips.length * clipDuration} שניות</p>
-                        </div>
-                      </div>
-
-                      <Button
-                        onClick={handleGenerateFinalVideo}
-                        disabled={isProcessing || selectedClips.length === 0}
-                        className="w-full"
-                        size="lg"
-                      >
-                        {isProcessing ? (
-                          <>
-                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
-                            {processingStep}
-                          </>
-                        ) : (
-                          <>
-                            <Download className="h-4 w-4 mr-2" />
-                            צור והורד סרטון
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {isProcessing && (
-                  <ProcessingStatus
-                    isProcessing={isProcessing}
-                    currentStep={processingStep}
-                  />
-                )}
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+// ... keep existing code
+// ... keep existing code
+// ... keep existing code
 };
 
 export default Index;
