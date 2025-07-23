@@ -9,7 +9,8 @@ import { ProcessingStatus } from '@/components/ProcessingStatus';
 import { AspectRatioSelector } from '@/components/AspectRatioSelector';
 import { useAudioProcessing } from '@/hooks/useAudioProcessing';
 import { useVideoProcessing } from '@/hooks/useVideoProcessing';
-import { Mic, Video, Sparkles, Download, Settings, Info, FileText } from 'lucide-react';
+import { useEnhancedHighlightDetection } from '@/hooks/useEnhancedHighlightDetection';
+import { Mic, Video, Sparkles, Download, Settings, Info, FileText, Brain } from 'lucide-react';
 import { toast } from 'sonner';
 import { VideoTimeline } from '@/components/VideoTimeline';
 import { TranscriptionViewer } from '@/components/TranscriptionViewer';
@@ -21,6 +22,15 @@ interface ProcessedFile {
   audioData: Float32Array;
   duration: number;
   highlights: number[];
+  enhancedHighlights?: Array<{
+    start: number;
+    end: number;
+    energy: number;
+    textScore: number;
+    combinedScore: number;
+    reason?: string;
+    type?: string;
+  }>;
   hookSegment: { start: number; end: number };
 }
 
@@ -55,79 +65,72 @@ const Index = () => {
   const [clipDuration, setClipDuration] = useState(30);
   const [sensitivity, setSensitivity] = useState(0.7);
   const [mainPlayerTime, setMainPlayerTime] = useState(0);
+  const [useEnhancedAnalysis, setUseEnhancedAnalysis] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const { processAudio } = useAudioProcessing();
   const { generateFinalVideo } = useVideoProcessing();
+  const { findEnhancedHighlights } = useEnhancedHighlightDetection();
 
   const findBestHook = (audioBuffer: Float32Array, hookDuration: number, sampleRate: number): { start: number; end: number } => {
     const windowSamples = Math.floor(hookDuration * sampleRate);
     let maxEnergy = 0;
     let bestStartTime = 0;
 
-    const stepSamples = Math.floor(sampleRate / 4); // Step by 0.25 second for more precision
+    const stepSamples = Math.floor(sampleRate / 4);
 
     for (let i = 0; i <= audioBuffer.length - windowSamples; i += stepSamples) {
-        const segment = audioBuffer.slice(i, i + windowSamples);
-        const energy = segment.reduce((sum, sample) => sum + sample * sample, 0) / segment.length; // RMS energy
+      const segment = audioBuffer.slice(i, i + windowSamples);
+      const energy = segment.reduce((sum, sample) => sum + sample * sample, 0) / segment.length;
 
-        if (energy > maxEnergy) {
-            maxEnergy = energy;
-            bestStartTime = i / sampleRate;
-        }
+      if (energy > maxEnergy) {
+        maxEnergy = energy;
+        bestStartTime = i / sampleRate;
+      }
     }
-    
+
     const bestEndTime = Math.min(bestStartTime + hookDuration, audioBuffer.length / sampleRate);
 
     return { start: bestStartTime, end: bestEndTime };
   };
 
   const findHighlights = async (
-    audioBuffer: Float32Array, 
-    numSegments: number, 
+    audioBuffer: Float32Array,
+    numSegments: number,
     threshold: number,
     excludeRange?: { start: number; end: number }
   ): Promise<number[]> => {
-    // Simple energy-based highlight detection
-    const windowSize = 44100; // 1 second at 44.1kHz
+    const windowSize = 44100;
     const energyValues: number[] = [];
-    
+
     for (let i = 0; i < audioBuffer.length; i += windowSize) {
       const segment = audioBuffer.slice(i, i + windowSize);
       const energy = segment.reduce((sum, sample) => sum + Math.abs(sample), 0) / segment.length;
       energyValues.push(energy);
     }
 
-    // Normalize energy values
     const maxEnergy = Math.max(...energyValues);
     const normalizedEnergy = energyValues.map(e => e / maxEnergy);
 
-    // Find peaks
     const peaks: number[] = [];
-    
+
     for (let i = 0; i < normalizedEnergy.length; i++) {
-      const currentTime = i; // i is seconds here because windowSize is 1 second
-      // Check if inside excluded range
-      if (excludeRange && currentTime >= excludeRange.start && currentTime <= excludeRange.end) {
+      if (excludeRange && i >= excludeRange.start && i <= excludeRange.end) {
         continue;
       }
-
       if (normalizedEnergy[i] > threshold) {
-        // Ensure minimum distance between peaks
         if (peaks.length === 0 || i - peaks[peaks.length - 1] > 30) {
           peaks.push(i);
         }
       }
     }
 
-    // If not enough peaks, find top energy points
     if (peaks.length < numSegments) {
       const energySubset = normalizedEnergy
         .map((energy, index) => ({ energy, index }))
         .filter(({ index }) => {
-            if (!excludeRange) return true;
-            const currentTime = index;
-            return currentTime < excludeRange.start || currentTime > excludeRange.end;
+          if (!excludeRange) return true;
+          return index < excludeRange.start || index > excludeRange.end;
         });
 
       const topIndices = energySubset
@@ -135,7 +138,7 @@ const Index = () => {
         .slice(0, numSegments)
         .map(item => item.index)
         .sort((a, b) => a - b);
-      
+
       return topIndices;
     }
 
@@ -157,14 +160,11 @@ const Index = () => {
       }
 
       setProcessingStep('מנתח אודיו...');
-      
-      // Process audio first
       const audioData = await processAudio(file);
       if (!audioData) {
         throw new Error('Failed to process audio');
       }
 
-      // Try transcription but don't fail if it doesn't work
       let transcriptionResult = null;
       try {
         setProcessingStep('מתמלל אודיו...');
@@ -183,19 +183,45 @@ const Index = () => {
 
       setProcessingStep('מחפש הוק וקטעי שיא...');
       const hookSegment = findBestHook(audioData.audioBuffer, 15, audioData.sampleRate);
-      const highlights = await findHighlights(audioData.audioBuffer, numHighlights, sensitivity, hookSegment);
+
+      let highlights: number[] = [];
+      let enhancedHighlights: any[] = [];
+
+      if (useEnhancedAnalysis && transcriptionResult && !transcriptionResult.error) {
+        setProcessingStep('מנתח טקסט ומשלב עם ניתוח אודיו...');
+        try {
+          const enhancedResults = await findEnhancedHighlights(
+            audioData.audioBuffer,
+            audioData.sampleRate,
+            transcriptionResult as TranscriptionResult,
+            numHighlights,
+            sensitivity,
+            hookSegment
+          );
+          enhancedHighlights = enhancedResults;
+          highlights = enhancedResults.map(h => h.start);
+          toast.success(`נמצאו ${highlights.length} קטעי שיא משולבים (אודיו + טקסט)!`);
+        } catch (error) {
+          console.warn('Enhanced analysis failed, falling back to audio-only:', error);
+          highlights = await findHighlights(audioData.audioBuffer, numHighlights, sensitivity, hookSegment);
+          toast.info(`נמצאו ${highlights.length} קטעי שיא (אודיו בלבד)`);
+        }
+      } else {
+        highlights = await findHighlights(audioData.audioBuffer, numHighlights, sensitivity, hookSegment);
+        toast.success(`נמצאו ${highlights.length} קטעי שיא + הוק!`);
+      }
 
       const processed: ProcessedFile = {
         file,
         audioData: audioData.audioBuffer,
         duration: audioData.duration,
         highlights,
+        enhancedHighlights,
         hookSegment
       };
 
       setProcessedData(processed);
       setSelectedClips([0, ...Array.from({ length: highlights.length }, (_, i) => i + 1)]);
-      toast.success(`נמצאו ${highlights.length} קטעי שיא + הוק!`);
     } catch (error) {
       console.error('Processing error:', error);
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -204,7 +230,7 @@ const Index = () => {
       setIsProcessing(false);
       setProcessingStep('');
     }
-  }, [processAudio, numHighlights, sensitivity]);
+  }, [processAudio, numHighlights, sensitivity, useEnhancedAnalysis, findEnhancedHighlights]);
 
   const handleGenerateFinalVideo = async () => {
     if (!processedData || selectedClips.length === 0) return;
@@ -223,7 +249,6 @@ const Index = () => {
       );
 
       if (finalVideo) {
-        // Create download link
         const url = URL.createObjectURL(finalVideo);
         const a = document.createElement('a');
         a.href = url;
@@ -232,7 +257,7 @@ const Index = () => {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        
+
         toast.success('הסרטון נוצר בהצלחה!');
       }
     } catch (error) {
@@ -291,8 +316,11 @@ const Index = () => {
               <FileText className="h-3 w-3" />
               תמלול חי
             </Badge>
+            <Badge variant="secondary" className="gap-1">
+              <Brain className="h-3 w-3" />
+              ניתוח טקסט חכם
+            </Badge>
           </div>
-          
           <div className="mb-6">
             <Button asChild variant="outline" size="lg" className="gap-2">
               <Link to="/transcription">
@@ -318,7 +346,23 @@ const Index = () => {
                   value={aspectRatio}
                   onChange={setAspectRatio}
                 />
-                
+
+                <div>
+                  <label className="flex items-center gap-2 text-sm font-medium mb-2">
+                    <input
+                      type="checkbox"
+                      checked={useEnhancedAnalysis}
+                      onChange={(e) => setUseEnhancedAnalysis(e.target.checked)}
+                      className="rounded"
+                    />
+                    <Brain className="h-4 w-4" />
+                    ניתוח טקסט משולב
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    משלב ניתוח תוכן הטקסט עם ניתוח האודיו לתוצאות מדויקות יותר
+                  </p>
+                </div>
+
                 <div>
                   <label className="text-sm font-medium mb-2 block">
                     מספר קטעי שיא
@@ -374,6 +418,7 @@ const Index = () => {
                         <li>• ההוק הוא 15 השניות הכי חזקות</li>
                         <li>• 16:9 ליוטיוב, 9:16 לסטורי</li>
                         <li>• רגישות גבוהה = יותר קטעים</li>
+                        <li>• ניתוח טקסט משפר דיוק</li>
                       </ul>
                     </div>
                   </div>
@@ -393,7 +438,7 @@ const Index = () => {
                   <FileUpload
                     onFileSelect={handleFileUpload}
                     acceptedTypes={["video/mp4", "video/mov", "audio/mp3", "audio/wav", "audio/mpeg"]}
-                    maxSize={200 * 1024 * 1024} // 200MB
+                    maxSize={200 * 1024 * 1024}
                   />
                   {isProcessing && (
                     <div className="mt-6">
@@ -409,7 +454,6 @@ const Index = () => {
               <div className="space-y-6">
                 <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                   <div className="xl:col-span-2 space-y-6">
-                    {/* Main Video Player & Timeline */}
                     <Card>
                       <CardHeader>
                         <CardTitle>תצוגה מקדימה ראשית</CardTitle>
@@ -428,11 +472,47 @@ const Index = () => {
                           currentTime={mainPlayerTime}
                           onSeek={handleSeek}
                         />
+
+                        {processedData.enhancedHighlights && processedData.enhancedHighlights.length > 0 && (
+                          <Card>
+                            <CardHeader>
+                              <CardTitle className="flex items-center gap-2">
+                                <Brain className="h-5 w-5" />
+                                ניתוח משולב - קטעים חזקים
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="space-y-3">
+                                {processedData.enhancedHighlights.map((highlight, index) => (
+                                  <div key={index} className="p-3 bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg border">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <Badge variant="outline" className="text-xs">
+                                        {highlight.type || 'Audio Peak'}
+                                      </Badge>
+                                      <span className="text-xs text-gray-500">
+                                        {Math.floor(highlight.start / 60)}:{(highlight.start % 60).toFixed(0).padStart(2, '0')} - {Math.floor(highlight.end / 60)}:{(highlight.end % 60).toFixed(0).padStart(2, '0')}
+                                      </span>
+                                    </div>
+                                    <p className="text-sm text-gray-700">{highlight.reason}</p>
+                                    <div className="flex gap-2 mt-2 text-xs">
+                                      <span className="text-blue-600">אודיו: {(highlight.energy * 100).toFixed(0)}%</span>
+                                      {highlight.textScore > 0 && (
+                                        <span className="text-purple-600">טקסט: {(highlight.textScore * 100).toFixed(0)}%</span>
+                                      )}
+                                      <span className="text-green-600 font-medium">
+                                        ציון כולל: {(highlight.combinedScore * 100).toFixed(0)}%
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </CardContent>
+                          </Card>
+                        )}
                       </CardContent>
                     </Card>
                   </div>
-                  
-                  {/* Transcription */}
+
                   {transcription && (
                     <TranscriptionViewer
                       segments={transcription.segments}
@@ -443,7 +523,6 @@ const Index = () => {
                   )}
                 </div>
 
-                {/* Clip Selector */}
                 <ClipSelector
                   file={processedData.file}
                   highlights={processedData.highlights}
@@ -454,7 +533,6 @@ const Index = () => {
                   clipDuration={clipDuration}
                 />
 
-                {/* Export */}
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
